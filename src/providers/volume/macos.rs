@@ -7,7 +7,7 @@ use coreaudio_sys::{
 };
 use std::option::Option;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI16, Ordering::Relaxed};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -161,8 +161,11 @@ fn register_device_change_listener(listener: &RcBlock<dyn Fn(u32, u64)>) {
     }
 }
 
-fn send_data(value: &f32, push_sender: &broadcast::Sender<Vec<u8>>) {
-    let volume = (value * 100.0).round() as u8;
+fn to_percent(value: f32) -> i16 {
+    (value * 100.0).round() as i16
+}
+
+fn send_data(volume: u8, push_sender: &broadcast::Sender<Vec<u8>>) {
     let data = vec![DataType::Volume as u8, volume];
     if let Err(e) = push_sender.send(data) {
         tracing::error!("Failed to send volume data: {}", e);
@@ -171,30 +174,39 @@ fn send_data(value: &f32, push_sender: &broadcast::Sender<Vec<u8>>) {
 
 pub struct VolumeProvider {
     is_started: Arc<AtomicBool>,
+    host_to_device_sender: broadcast::Sender<Vec<u8>>,
+    // latest observed volume percent, or -1 when unknown; the sender thread reads
+    // this and pushes only the most recent value, so SoundSource's smooth volume
+    // fades don't flood the keyboard with intermediate values
+    pending_volume: Arc<AtomicI16>,
     device_changed_block: RcBlock<dyn Fn(u32, u64)>,
     volume_changed_block: RcBlock<dyn Fn(u32, u64)>,
 }
 
 impl VolumeProvider {
     pub fn new(data_sender: broadcast::Sender<Vec<u8>>) -> Box<dyn Provider> {
-        let sender = data_sender.clone();
+        let pending_volume = Arc::new(AtomicI16::new(-1));
+
+        let pending = pending_volume.clone();
         let volume_changed_block = RcBlock::new(move |_: u32, _: u64| {
             if let Some(volume) = get_current_volume() {
-                send_data(&volume, &sender.clone());
+                pending.store(to_percent(volume), Relaxed);
             }
         });
 
-        let sender = data_sender.clone();
+        let pending = pending_volume.clone();
         let volume_changed_block_clone = volume_changed_block.clone();
         let device_changed_block: RcBlock<dyn Fn(u32, u64)> = RcBlock::new(move |_: u32, _: u64| {
             register_volume_listener(&volume_changed_block_clone);
             if let Some(volume) = get_current_volume() {
-                send_data(&volume, &sender.clone());
+                pending.store(to_percent(volume), Relaxed);
             }
         });
 
         let provider = VolumeProvider {
             is_started: Arc::new(AtomicBool::new(false)),
+            host_to_device_sender: data_sender,
+            pending_volume,
             device_changed_block,
             volume_changed_block,
         };
@@ -207,17 +219,35 @@ impl Provider for VolumeProvider {
         tracing::info!("Volume Provider started");
         self.is_started.store(true, Relaxed);
         let is_started = self.is_started.clone();
+        let pending_volume = self.pending_volume.clone();
+        let host_to_device_sender = self.host_to_device_sender.clone();
 
         register_volume_listener(&self.volume_changed_block);
         register_device_change_listener(&self.device_changed_block);
 
+        // seed the current volume so it is shown on connect, otherwise the keyboard
+        // shows nothing until the volume is changed for the first time
+        if let Some(volume) = get_current_volume() {
+            self.pending_volume.store(to_percent(volume), Relaxed);
+        }
+
         std::thread::spawn(move || {
+            // throttle: push at most one update per tick, always the latest value.
+            // this coalesces SoundSource's smooth fades into a few packets and
+            // guarantees the keyboard lands on the final settled value
+            let mut last_sent: i16 = -1;
             loop {
                 if !is_started.load(Relaxed) {
                     break;
                 }
 
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                let pending = pending_volume.load(Relaxed);
+                if pending >= 0 && pending != last_sent {
+                    last_sent = pending;
+                    send_data(pending as u8, &host_to_device_sender);
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(50));
             }
 
             tracing::info!("Volume Provider stopped");
