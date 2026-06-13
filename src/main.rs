@@ -9,7 +9,7 @@ mod keyboard;
 mod providers;
 mod utils;
 
-use config::load_config;
+use config::{load_config, ConfigOverrides};
 use keyboard::Keyboard;
 
 #[cfg(not(target_os = "macos"))]
@@ -39,7 +39,29 @@ struct Args {
     config: Option<std::path::PathBuf>,
     /// Print all connected HIDs
     #[arg(short, long)]
-    print_hids: bool
+    print_hids: bool,
+    /// Keyboard product id in hex, e.g. 0x1988. Overrides the config file and
+    /// lets the app run without a qmk-hid-host.json
+    #[arg(long)]
+    product_id: Option<String>,
+    /// Keyboard name (only applied together with --product-id)
+    #[arg(long)]
+    name: Option<String>,
+    /// Raw HID usage in hex (only applied together with --product-id)
+    #[arg(long)]
+    usage: Option<String>,
+    /// Raw HID usage page in hex (only applied together with --product-id)
+    #[arg(long)]
+    usage_page: Option<String>,
+    /// Keyboard layouts; repeat or comma-separate, e.g. --layout en --layout ru
+    #[arg(long, value_delimiter = ',')]
+    layout: Vec<String>,
+    /// Delay between reconnection attempts in milliseconds
+    #[arg(long)]
+    reconnect_delay: Option<u64>,
+    /// Weather URL (macOS only), e.g. wttr.in/Berlin?format=%t
+    #[arg(long)]
+    weather_url: Option<String>,
 }
 
 fn main() {
@@ -57,7 +79,18 @@ fn main() {
     if args.print_hids {
         return print_unique_hid_devices();
     }
-    let config = load_config(args.config.unwrap_or("./qmk-hid-host.json".into()));
+    let config = load_config(
+        args.config.unwrap_or("./qmk-hid-host.json".into()),
+        ConfigOverrides {
+            product_id: args.product_id,
+            name: args.name,
+            usage: args.usage,
+            usage_page: args.usage_page,
+            layouts: args.layout,
+            reconnect_delay: args.reconnect_delay,
+            weather_url: args.weather_url,
+        },
+    );
     let reconnect_delay = config.reconnect_delay.unwrap_or(5000);
     for device in &config.devices {
         let host_to_device_sender = host_to_device_sender.clone();

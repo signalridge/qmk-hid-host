@@ -114,6 +114,23 @@ You can specify a different location for the configuration file by using `--conf
 qmk-hid-host -c $HOME/.config/qmk-hid-host/config.json
 ```
 
+#### Command-line options (no config file needed)
+
+Instead of a config file you can pass the configuration directly on the command line. When any of these options is given the app runs without creating a `qmk-hid-host.json`; if a config file is also present, these options override its values.
+
+```
+qmk-hid-host --product-id 0x1988 --layout en
+```
+
+| Option | Description |
+| --- | --- |
+| `--product-id <hex>` | `pid` of your keyboard, e.g. `0x1988` (run `qmk-hid-host -p` to find it) |
+| `--name <name>` | keyboard name shown in logs (used with `--product-id`) |
+| `--usage <hex>` / `--usage-page <hex>` | override only if `RAW_USAGE_ID`/`RAW_USAGE_PAGE` were redefined (used with `--product-id`) |
+| `--layout <a> --layout <b>` | supported layouts (repeat or comma-separate: `--layout en,ru`) |
+| `--reconnect-delay <ms>` | delay between reconnect attempts |
+| `--weather-url <url>` | weather URL (macOS), e.g. `wttr.in/Berlin?format=%t` |
+
 ### Windows
 
 #### Manual/Debug mode
